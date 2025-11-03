@@ -2,7 +2,9 @@ defmodule UrbanFleet.Server do
   use GenServer
   require Logger
 
-  # Client API
+  # ==============================
+  # CLIENT API
+  # ==============================
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: :server)
@@ -12,7 +14,9 @@ defmodule UrbanFleet.Server do
     GenServer.cast(__MODULE__, :start_cli)
   end
 
-  # Server Callbacks
+  # ==============================
+  # SERVER CALLBACKS
+  # ==============================
 
   @impl true
   def init(_) do
@@ -22,7 +26,11 @@ defmodule UrbanFleet.Server do
 
   @impl true
   def handle_cast(:start_cli, state) do
-    spawn(fn -> cli_loop(nil) end)
+    spawn(fn ->
+      show_server_banner()
+      cli_loop(nil)
+    end)
+
     {:noreply, state}
   end
 
@@ -46,25 +54,29 @@ defmodule UrbanFleet.Server do
     {:noreply, state}
   end
 
-  # CLI Loop
+  # ==============================
+  # CLI LOOP
+  # ==============================
 
   defp cli_loop(current_user) do
     prompt =
       if current_user do
-        "[#{current_user.username}@#{current_user.role}] > "
+        IO.ANSI.green() <>
+          "[#{current_user.username}@#{Atom.to_string(current_user.role)}] > " <>
+          IO.ANSI.reset()
       else
-        "[guest] > "
+        IO.ANSI.cyan() <> "[server-admin] > " <> IO.ANSI.reset()
       end
 
     IO.write(prompt)
 
     case IO.gets("") do
       :eof ->
-        IO.puts("\nGoodbye!")
+        IO.puts("\n👋 Saliendo del servidor...")
         :ok
 
       {:error, reason} ->
-        IO.puts("Error reading input: #{inspect(reason)}")
+        IO.puts("⚠️ Error leyendo entrada: #{inspect(reason)}")
         cli_loop(current_user)
 
       input ->
@@ -73,43 +85,67 @@ defmodule UrbanFleet.Server do
         |> process_command(current_user)
         |> case do
           {:continue, new_user} -> cli_loop(new_user)
-          :exit -> IO.puts("Goodbye!")
+          :exit -> IO.puts("🖥️ Servidor detenido.")
         end
     end
   end
 
-  # Command Processing
+  # ==============================
+  # COMMAND PROCESSING
+  # ==============================
 
   defp process_command("", current_user), do: {:continue, current_user}
 
-  defp process_command("help", _current_user) do
-    IO.puts("""
+  # --- HELP (CLIENT/DRIVER) ---
+  defp process_command("help", current_user) do
+    case current_user do
+      nil -> show_guest_help()
+      %{role: :client} -> show_client_help()
+      %{role: :driver} -> show_driver_help()
+      _ -> show_guest_help()
+    end
 
-    Available Commands:
-    -------------------
-    connect <username> <password> <role>  - Connect as client or driver
-    disconnect                             - Disconnect from system
+    {:continue, current_user}
+  end
 
-    Client Commands:
-    request_trip origen=<loc> destino=<loc> - Request a trip
-    my_score                                 - View your score
-
-    Driver Commands:
-    list_trips                               - List available trips
-    accept_trip <trip_id>                    - Accept a trip
-    my_score                                 - View your score
-
-    General:
-    ranking [client|driver]                  - View rankings
-    help                                     - Show this help
-    exit                                     - Exit application
-    """)
-
+  # --- HELP ADMIN ---
+  defp process_command("help_admin", _current_user) do
+    show_admin_help()
     {:continue, nil}
   end
 
-  defp process_command("exit", _current_user), do: :exit
+  # --- EXIT ---
+  defp process_command("exit", _), do: :exit
 
+  # --- SERVER COMMANDS (ADMIN) ---
+  defp process_command("add_zone " <> zone, current_user) do
+    UrbanFleet.Location.add_location(String.trim(zone))
+    IO.puts("✅ Zona '#{zone}' agregada correctamente.")
+    {:continue, current_user}
+  end
+
+  defp process_command("list_zones", current_user) do
+    UrbanFleet.show_locations()
+    {:continue, current_user}
+  end
+
+  defp process_command("show_stats", current_user) do
+    UrbanFleet.show_stats()
+    {:continue, current_user}
+  end
+
+  defp process_command("show_users", current_user) do
+    IO.puts("\n📋 Usuarios registrados:\n")
+    users = :sys.get_state(UrbanFleet.UserManager)
+    users
+    |> Map.values()
+    |> Enum.each(fn u ->
+      IO.puts("• #{u.username} (#{u.role}) - #{u.score} puntos")
+    end)
+    {:continue, current_user}
+  end
+
+  # --- CONNECTION ---
   defp process_command("connect " <> args, nil) do
     case String.split(args) do
       [username, password, role] when role in ["client", "driver"] ->
@@ -117,151 +153,204 @@ defmodule UrbanFleet.Server do
 
         case UrbanFleet.UserManager.register_or_login(username, password, role_atom) do
           {:ok, :registered, user} ->
-            IO.puts("✓ Welcome #{username}! You've been registered as a #{role}.")
+            IO.puts("✨ Bienvenido #{username}! Registrado como #{role}.")
             {:continue, user}
 
           {:ok, :logged_in, user} ->
-            IO.puts("✓ Welcome back #{username}!")
+            IO.puts("✅ Bienvenido de nuevo #{username}!")
             {:continue, user}
 
           {:error, :invalid_password} ->
-            IO.puts("✗ Invalid password")
+            IO.puts("❌ Contraseña incorrecta.")
             {:continue, nil}
         end
 
       _ ->
-        IO.puts("✗ Usage: connect <username> <password> <client|driver>")
+        IO.puts("✗ Uso: connect <usuario> <contraseña> <client|driver>")
         {:continue, nil}
     end
   end
 
   defp process_command("connect " <> _, current_user) do
-    IO.puts("✗ You are already connected as #{current_user.username}")
+    IO.puts("✗ Ya estás conectado como #{current_user.username}")
     {:continue, current_user}
   end
 
-  defp process_command("disconnect", current_user) when not is_nil(current_user) do
-    IO.puts("✓ Disconnected. Goodbye #{current_user.username}!")
+  defp process_command("disconnect", %{username: name}) do
+    IO.puts("👋 Desconectado. Hasta luego #{name}!")
     {:continue, nil}
   end
 
   defp process_command("disconnect", nil) do
-    IO.puts("✗ You are not connected")
+    IO.puts("✗ No estás conectado")
     {:continue, nil}
   end
 
-  defp process_command("request_trip " <> args, %{role: :client} = current_user) do
+  # --- CLIENT COMMANDS ---
+  defp process_command("request_trip " <> args, %{role: :client} = user) do
     case parse_trip_args(args) do
       {:ok, origin, destination} ->
         case UrbanFleet.Location.validate_locations([origin, destination]) do
           :ok ->
-            case UrbanFleet.TripSupervisor.create_trip(current_user.username, origin, destination) do
+            case UrbanFleet.TripSupervisor.create_trip(user.username, origin, destination) do
               {:ok, trip_id} ->
-                IO.puts("✓ Trip requested! ID: #{trip_id}")
-                IO.puts("  Route: #{origin} → #{destination}")
-                IO.puts("  Waiting for a driver... (expires in 20s)")
+                IO.puts("""
+                ✅ Viaje solicitado!
+                ID: #{trip_id}
+                Ruta: #{origin} → #{destination}
+                Esperando conductor... (expira en 20s)
+                """)
 
               {:error, reason} ->
-                IO.puts("✗ Failed to create trip: #{inspect(reason)}")
+                IO.puts("❌ No se pudo crear el viaje: #{inspect(reason)}")
             end
 
-          {:error, invalid_locs} ->
-            IO.puts("✗ Invalid locations: #{Enum.join(invalid_locs, ", ")}")
+          {:error, invalid} ->
+            IO.puts("⚠️ Localizaciones inválidas: #{Enum.join(invalid, ", ")}")
         end
 
       :error ->
-        IO.puts("✗ Usage: request_trip origen=<location> destino=<location>")
+        IO.puts("✗ Uso: request_trip origen=<loc> destino=<loc>")
     end
 
-    {:continue, current_user}
+    {:continue, user}
   end
 
-  defp process_command("request_trip " <> _, current_user) do
-    IO.puts("✗ Only clients can request trips")
-    {:continue, current_user}
-  end
-
-  defp process_command("list_trips", %{role: :driver} = current_user) do
+  # --- DRIVER COMMANDS ---
+  defp process_command("list_trips", %{role: :driver} = user) do
     trips = UrbanFleet.Trip.list_available()
 
     if Enum.empty?(trips) do
-      IO.puts("No available trips at the moment.")
+      IO.puts("🚫 No hay viajes disponibles por ahora.")
     else
-      IO.puts("\nAvailable Trips:")
-      IO.puts(String.duplicate("-", 70))
-
+      IO.puts("\n🗺️  Viajes disponibles:\n" <> String.duplicate("─", 60))
       Enum.each(trips, fn trip ->
-        IO.puts("ID: #{trip.id}")
-        IO.puts("  Client: #{trip.client}")
-        IO.puts("  Route: #{trip.origin} → #{trip.destination}")
-        IO.puts("  Created: #{format_datetime(trip.created_at)}")
-        IO.puts("")
+        IO.puts("""
+        ID: #{trip.id}
+        Cliente: #{trip.client}
+        Ruta: #{trip.origin} → #{trip.destination}
+        Creado: #{format_datetime(trip.created_at)}
+        """)
       end)
     end
 
-    {:continue, current_user}
+    {:continue, user}
   end
 
-  defp process_command("list_trips", current_user) do
-    IO.puts("✗ Only drivers can list trips")
-    {:continue, current_user}
-  end
-
-  defp process_command("accept_trip " <> trip_id, %{role: :driver} = current_user) do
-    trip_id = String.trim(trip_id)
-
-    case UrbanFleet.Trip.accept_trip(trip_id, current_user.username) do
+  defp process_command("accept_trip " <> trip_id, %{role: :driver} = user) do
+    case UrbanFleet.Trip.accept_trip(String.trim(trip_id), user.username) do
       {:ok, trip} ->
-        IO.puts("✓ Trip accepted!")
-        IO.puts("  Route: #{trip.origin} → #{trip.destination}")
-        IO.puts("  Client: #{trip.client}")
-        IO.puts("  Duration: ~20 seconds")
-        IO.puts("  You'll earn +15 points upon completion")
+        IO.puts("""
+        ✅ Viaje aceptado!
+        Cliente: #{trip.client}
+        Ruta: #{trip.origin} → #{trip.destination}
+        Duración: ~20s
+        Ganarás +15 puntos al completarlo.
+        """)
 
       {:error, :trip_not_available} ->
-        IO.puts("✗ Trip is no longer available")
+        IO.puts("⚠️ El viaje ya no está disponible.")
 
       {:error, reason} ->
-        IO.puts("✗ Failed to accept trip: #{inspect(reason)}")
+        IO.puts("❌ Error al aceptar viaje: #{inspect(reason)}")
     end
 
-    {:continue, current_user}
+    {:continue, user}
   end
 
-  defp process_command("accept_trip " <> _, current_user) do
-    IO.puts("✗ Only drivers can accept trips")
-    {:continue, current_user}
-  end
-
-  defp process_command("my_score", current_user) when not is_nil(current_user) do
-    case UrbanFleet.UserManager.get_score(current_user.username) do
+  # --- GENERAL ---
+  defp process_command("my_score", user) when not is_nil(user) do
+    case UrbanFleet.UserManager.get_score(user.username) do
       {:ok, score} ->
-        IO.puts("Your score: #{score} points")
+        IO.puts("⭐ Puntuación de #{user.username}: #{score} puntos")
 
-      {:error, _} ->
-        IO.puts("✗ Could not retrieve score")
+      _ ->
+        IO.puts("⚠️ No se pudo obtener la puntuación.")
     end
 
-    {:continue, current_user}
+    {:continue, user}
   end
 
-  defp process_command("ranking", current_user) do
+  defp process_command("ranking", user) do
     show_ranking(nil)
-    {:continue, current_user}
+    {:continue, user}
   end
 
-  defp process_command("ranking " <> role, current_user) when role in ["client", "driver"] do
+  defp process_command("ranking " <> role, user) when role in ["client", "driver"] do
     show_ranking(String.to_atom(role))
-    {:continue, current_user}
+    {:continue, user}
   end
 
   defp process_command(cmd, current_user) do
-    IO.puts("✗ Unknown command: #{cmd}")
-    IO.puts("Type 'help' for available commands")
+    IO.puts("❓ Comando desconocido: #{cmd}")
+    IO.puts("Escribe 'help' o 'help_admin' para ver los disponibles.")
     {:continue, current_user}
   end
 
-  # Helper Functions
+  # ==============================
+  # HELPER FUNCTIONS
+  # ==============================
+
+  defp show_server_banner do
+    IO.puts("""
+    ╔════════════════════════════════════════╗
+    ║        🖥️  URBANFLEET SERVER MODE       ║
+    ╚════════════════════════════════════════╝
+
+    Bienvenido Administrador.
+    Escribe 'help_admin' para ver los comandos disponibles.
+    """)
+  end
+
+  defp show_guest_help do
+    IO.puts("""
+    ╔════════════════════════════════════════╗
+    ║        👋 BIENVENIDO A URBANFLEET       ║
+    ╚════════════════════════════════════════╝
+    connect <user> <pass> <client|driver> - Iniciar sesión o registrar
+    help                                  - Mostrar este menú
+    exit                                  - Salir
+    """)
+  end
+
+  defp show_client_help do
+    IO.puts("""
+    ╔════════════════════════════════════════╗
+    ║           📱 COMANDOS CLIENTE           ║
+    ╚════════════════════════════════════════╝
+    request_trip origen=<loc> destino=<loc> - Solicitar viaje
+    my_score                                - Ver tu puntuación
+    ranking                                 - Ver ranking global
+    disconnect                              - Desconectarse
+    """)
+  end
+
+  defp show_driver_help do
+    IO.puts("""
+    ╔════════════════════════════════════════╗
+    ║           🚕 COMANDOS CONDUCTOR         ║
+    ╚════════════════════════════════════════╝
+    list_trips        - Ver viajes disponibles
+    accept_trip <id>  - Aceptar viaje
+    my_score          - Ver tu puntuación
+    ranking driver    - Ver ranking de conductores
+    disconnect        - Desconectarse
+    """)
+  end
+
+  defp show_admin_help do
+    IO.puts("""
+    ╔════════════════════════════════════════╗
+    ║          🧠 MODO ADMINISTRADOR          ║
+    ╚════════════════════════════════════════╝
+    add_zone <nombre>        - Agregar nueva zona
+    list_zones               - Mostrar zonas válidas
+    show_stats               - Ver estadísticas del sistema
+    show_users               - Ver usuarios registrados
+    help_admin               - Mostrar este menú
+    exit                     - Salir del modo servidor
+    """)
+  end
 
   defp parse_trip_args(args) do
     parts = String.split(args)
@@ -282,28 +371,23 @@ defmodule UrbanFleet.Server do
         end
       end)
 
-    if origin && destination do
-      {:ok, origin, destination}
-    else
-      :error
-    end
+    if origin && destination, do: {:ok, origin, destination}, else: :error
   end
 
   defp show_ranking(role) do
     title =
       case role do
-        nil -> "Global Ranking"
-        :client -> "Client Ranking"
-        :driver -> "Driver Ranking"
+        nil -> "🏆 RANKING GLOBAL"
+        :client -> "👥 RANKING CLIENTES"
+        :driver -> "🚗 RANKING CONDUCTORES"
       end
 
-    IO.puts("\n#{title}")
-    IO.puts(String.duplicate("=", 50))
+    IO.puts("\n#{title}\n" <> String.duplicate("═", 50))
 
     UrbanFleet.UserManager.get_ranking(role)
     |> Enum.with_index(1)
     |> Enum.each(fn {user, rank} ->
-      IO.puts("#{rank}. #{user.username} (#{user.role}) - #{user.score} points")
+      IO.puts("#{rank}. #{user.username} (#{user.role}) - #{user.score} puntos")
     end)
 
     IO.puts("")
