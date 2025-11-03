@@ -2,16 +2,20 @@
 
 IO.puts("🚖 Starting UrbanFleet SERVER...\n")
 
-# Carga módulos
+# =======================================
+# CARGA DE MÓDULOS (EN ORDEN CORRECTO)
+# =======================================
 Code.compile_file("lib/urban_fleet/location.ex")
 Code.compile_file("lib/urban_fleet/persistence.ex")
 Code.compile_file("lib/urban_fleet/user_manager.ex")
 Code.compile_file("lib/urban_fleet/trip.ex")
 Code.compile_file("lib/urban_fleet/trip_supervisor.ex")
+Code.compile_file("lib/urban_fleet.ex")      # 👈 Primero el módulo principal
 Code.compile_file("lib/urban_fleet/server.ex")
-Code.compile_file("lib/urban_fleet.ex")
 
-# Crea carpeta y datos iniciales
+# =======================================
+# DATOS INICIALES
+# =======================================
 File.mkdir_p!("data")
 
 unless File.exists?("data/locations.dat") do
@@ -29,20 +33,28 @@ unless File.exists?("data/locations.dat") do
   """)
 end
 
-# Inicia procesos principales
+# =======================================
+# INICIALIZACIÓN DE PROCESOS
+# =======================================
 {:ok, _registry} = Registry.start_link(keys: :unique, name: UrbanFleet.TripRegistry)
 {:ok, _user_manager} = UrbanFleet.UserManager.start_link([])
 {:ok, _trip_supervisor} = UrbanFleet.TripSupervisor.start_link([])
 {:ok, _server} = UrbanFleet.Server.start_link([])
 
-IO.puts("""
-╔════════════════════════════════════════╗
-║         URBANFLEET SERVER v1.0.0       ║
-╚════════════════════════════════════════╝
-""")
+# =======================================
+# BANNER DEL SERVIDOR
+# =======================================
 
 IO.puts("System Status: ✓ Running\n")
 IO.puts("Waiting for clients/drivers to connect...\n")
 
-# Mantén vivo el servidor
+# =======================================
+# LANZAR CLI DIRECTAMENTE
+# =======================================
+# 👇 Esto invoca la interfaz interactiva directamente (sin GenServer.cast)
+spawn(fn -> UrbanFleet.Server.start_cli() end)
+
+# =======================================
+# MANTENER VIVO EL SERVIDOR
+# =======================================
 Process.sleep(:infinity)

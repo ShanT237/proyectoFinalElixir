@@ -1,4 +1,6 @@
-defmodule Client do
+#!/usr/bin/env elixir
+
+defmodule UrbanFleet.Client do
   def start do
     IO.puts("""
     ╔════════════════════════════════════════╗
@@ -8,33 +10,31 @@ defmodule Client do
     Type 'help' to view available commands.
     """)
 
-    # Conexión al nodo remoto
-    if Node.connect(:"server@schwarz") do
-      IO.puts("✅ Conectado al servidor")
-
-      # Verifica que el proceso :server exista
-      case :rpc.call(:"server@schwarz", Process, :whereis, [:server]) do
+    # Intentar conectar al servidor
+    if Node.connect(:server@schwarz) do
+      IO.puts("✅ Connected to UrbanFleet Server.")
+      case :rpc.call(:server@schwarz, Process, :whereis, [:server]) do
         pid when is_pid(pid) ->
-          IO.puts("✅ Servidor encontrado: #{inspect(pid)}")
-          command_loop(pid)
+          IO.puts("🖥️  Remote server process found.")
+          command_loop(pid, nil)
 
         _ ->
-          IO.puts("⚠️ No se encontró el proceso :server en el nodo remoto")
+          IO.puts("⚠️ Server process not found. Make sure it's running.")
       end
     else
-      IO.puts("❌ No se pudo conectar al nodo remoto")
+      IO.puts("❌ Could not connect to remote node (:server@schwarz)")
     end
   end
 
   # ============================================================
-  # CLI Loop principal
+  # CLI LOOP
   # ============================================================
 
-  defp command_loop(pid, role \\ nil) do
+  defp command_loop(pid, user \\ nil) do
     prompt =
-      case role do
-        :client -> IO.ANSI.green() <> "[Cliente] > " <> IO.ANSI.reset()
-        :driver -> IO.ANSI.yellow() <> "[Conductor] > " <> IO.ANSI.reset()
+      case user do
+        %{role: :client} -> IO.ANSI.green() <> "[Cliente] > " <> IO.ANSI.reset()
+        %{role: :driver} -> IO.ANSI.yellow() <> "[Conductor] > " <> IO.ANSI.reset()
         _ -> IO.ANSI.cyan() <> "[Invitado] > " <> IO.ANSI.reset()
       end
 
@@ -49,28 +49,44 @@ defmodule Client do
         cmd = String.trim(raw)
 
         case cmd do
+          "" ->
+            command_loop(pid, user)
+
           "exit" ->
             IO.puts("👋 Desconectando cliente...")
 
           "help" ->
-            show_help(role)
-            command_loop(pid, role)
+            show_help(user)
+            command_loop(pid, user)
 
           _ ->
-            # Enviar comando al servidor remoto
-            case :rpc.call(:"server@schwarz", GenServer, :call, [:server, {:remote_command, cmd}]) do
-              :ok ->
-                command_loop(pid, role)
+            # Enviar comando al servidor
+            case :rpc.call(:server@schwarz, GenServer, :call, [:server, {:remote_command, cmd}]) do
+              {:ok, response} ->
+                # Mostrar el mensaje recibido
+                IO.puts(response)
 
-              :exit ->
-                IO.puts("👋 Sesión finalizada por el servidor.")
+                # Si es login exitoso, actualizar el estado del cliente
+                if String.contains?(response, "Registrado") or
+                     String.contains?(response, "Bienvenido de nuevo") do
+                  [_, username, _, role] = String.split(cmd)
+                  new_user = %{username: username, role: String.to_atom(role)}
+                  command_loop(pid, new_user)
+                else
+                  command_loop(pid, user)
+                end
+
+              {:error, response} ->
+                IO.puts(response)
+                command_loop(pid, user)
 
               {:badrpc, reason} ->
                 IO.puts("⚠️ Error RPC: #{inspect(reason)}")
+                command_loop(pid, user)
 
               other ->
-                IO.inspect(other, label: "Respuesta del servidor")
-                command_loop(pid, role)
+                IO.inspect(other, label: "Respuesta desconocida del servidor")
+                command_loop(pid, user)
             end
         end
     end
@@ -80,7 +96,7 @@ defmodule Client do
   # HELP MENUS
   # ============================================================
 
-  defp show_help(:client) do
+  defp show_help(%{role: :client}) do
     IO.puts("""
     ╔════════════════════════════════════════╗
     ║          📱 CLIENT COMMANDS             ║
@@ -94,7 +110,7 @@ defmodule Client do
     """)
   end
 
-  defp show_help(:driver) do
+  defp show_help(%{role: :driver}) do
     IO.puts("""
     ╔════════════════════════════════════════╗
     ║          🚕 DRIVER COMMANDS             ║
@@ -121,4 +137,4 @@ defmodule Client do
   end
 end
 
-Client.start()
+UrbanFleet.Client.start()
